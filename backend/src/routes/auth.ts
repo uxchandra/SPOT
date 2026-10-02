@@ -18,14 +18,14 @@ const cookieOptions = {
 router.post("/login", async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
   if (!email || !password) {
-    res.status(400).json({ message: "Email dan password wajib diisi" });
+    res.status(400).json({ message: "Email and password are required" });
     return;
   }
 
   const user = await prisma.user.findUnique({ where: { email } });
   // Pesan error dibuat sama supaya tidak membocorkan email mana yang terdaftar
   if (!user || !user.isActive || !(await bcrypt.compare(password, user.password))) {
-    res.status(401).json({ message: "Email atau password salah" });
+    res.status(401).json({ message: "Invalid email or password" });
     return;
   }
 
