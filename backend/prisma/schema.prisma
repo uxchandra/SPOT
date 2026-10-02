@@ -1,0 +1,262 @@
+// Dokumentasi schema Prisma: https://pris.ly/d/prisma-schema
+// Alur mengubah tabel: edit file ini -> npm run db:migrate -- --name nama_perubahan
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ===== User, role & permission =====
+// Setiap user punya 1 role, setiap role punya banyak permission.
+
+model User {
+  id                Int                @id @default(autoincrement())
+  name              String             @db.VarChar(255)
+  email             String             @unique @db.VarChar(255)
+  password          String             @db.VarChar(255) // hash bcrypt, bukan password asli
+  isActive          Boolean            @default(true) @map("is_active")
+  roleId            Int                @map("role_id")
+  role              Role               @relation(fields: [roleId], references: [id])
+  departmentId      Int?               @map("department_id") // department tempat user bekerja
+  department        Department?        @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  headOfDepartments Department[]       @relation("DepartmentHead") // department yang jabatannya dipegang user ini
+  approvalSteps     ApprovalFlowStep[]
+  purchaseRequests  PurchaseRequest[]
+  approvals         DocumentApproval[]
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique @db.VarChar(100) // contoh: admin, staff, approver
+  description String?          @db.VarChar(255)
+  users       User[]
+  permissions RolePermission[]
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@map("roles")
+}
+
+model Permission {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique @db.VarChar(100) // contoh: department.view, user.manage
+  description String?          @db.VarChar(255)
+  roles       RolePermission[]
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int        @map("role_id")
+  permissionId Int        @map("permission_id")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ===== Data Master =====
+
+model Department {
+  id               Int               @id @default(autoincrement())
+  code             String            @unique @db.VarChar(20) // contoh: FIN, HRD, IT
+  name             String            @db.VarChar(255)
+  description      String?           @db.VarChar(255)
+  position         String?           @db.VarChar(100) // jabatan penanggung jawab, contoh: Finance Manager
+  userId           Int?              @map("user_id") // user yang memegang jabatan tersebut
+  user             User?             @relation("DepartmentHead", fields: [userId], references: [id], onDelete: SetNull)
+  members          User[]            @relation("DepartmentMembers")
+  approvalFlows    ApprovalFlow[]
+  purchaseRequests PurchaseRequest[]
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  @@map("departments")
+}
+
+model ItemCategory {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique @db.VarChar(100) // contoh: ATK, IT, Furniture
+  description String?  @db.VarChar(255)
+  items       Item[]
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("item_categories")
+}
+
+model Supplier {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique @db.VarChar(20) // contoh: SUP-001
+  name          String   @db.VarChar(255)
+  contactPerson String?  @map("contact_person") @db.VarChar(255)
+  phone         String?  @db.VarChar(30)
+  email         String?  @db.VarChar(255)
+  address       String?  @db.Text
+  npwp          String?  @db.VarChar(25) // Nomor Pokok Wajib Pajak
+  isActive      Boolean  @default(true) @map("is_active")
+  items         Item[]
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("suppliers")
+}
+
+model Item {
+  id                      Int                   @id @default(autoincrement())
+  code                    String                @unique @db.VarChar(30) // contoh: ATK-001
+  name                    String                @db.VarChar(255)
+  categoryId              Int                   @map("category_id")
+  category                ItemCategory          @relation(fields: [categoryId], references: [id])
+  unit                    String                @db.VarChar(20) // satuan, pilihan tetap di src/lib/units.ts
+  price                   Decimal               @db.Decimal(15, 2) // harga acuan; di PO nanti harga disalin & bisa diubah
+  brand                   String?               @db.VarChar(100)
+  specification           String?               @db.Text
+  supplierId              Int?                  @map("supplier_id") // supplier utama (opsional)
+  supplier                Supplier?             @relation(fields: [supplierId], references: [id])
+  isActive                Boolean               @default(true) @map("is_active")
+  purchaseRequestItems    PurchaseRequestItem[] @relation("PurchaseRequestItem")
+  purchaseRequestMachines PurchaseRequestItem[] @relation("PurchaseRequestMachine")
+  createdAt               DateTime              @default(now()) @map("created_at")
+  updatedAt               DateTime              @updatedAt @map("updated_at")
+
+  @@map("items")
+}
+
+// ===== Approval =====
+
+// Jenis dokumen yang memakai alur approval (nanti ditambah PURCHASE_ORDER)
+enum DocumentType {
+  PURCHASE_REQUEST
+}
+
+// Alur approval: 1 alur per department per jenis dokumen
+model ApprovalFlow {
+  id           Int                @id @default(autoincrement())
+  documentType DocumentType       @map("document_type")
+  departmentId Int                @map("department_id")
+  department   Department         @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  steps        ApprovalFlowStep[]
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  @@unique([documentType, departmentId])
+  @@map("approval_flows")
+}
+
+// Tahap approval, contoh: 1. Checked (Bp Pambudi), 2. Approved (Bp Jamil)
+model ApprovalFlowStep {
+  id         Int          @id @default(autoincrement())
+  flowId     Int          @map("flow_id")
+  flow       ApprovalFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  stepOrder  Int          @map("step_order")
+  name       String       @db.VarChar(50)
+  approverId Int          @map("approver_id")
+  approver   User         @relation(fields: [approverId], references: [id])
+
+  @@unique([flowId, stepOrder])
+  @@map("approval_flow_steps")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED // tahap berikutnya dibatalkan karena tahap sebelumnya menolak
+}
+
+// Riwayat approval per dokumen. Tahap disalin dari alur saat dokumen diajukan,
+// jadi perubahan alur tidak memengaruhi dokumen yang sedang berjalan.
+model DocumentApproval {
+  id           Int            @id @default(autoincrement())
+  documentType DocumentType   @map("document_type")
+  documentId   Int            @map("document_id")
+  round        Int // pengajuan ke-berapa (naik setiap diajukan ulang setelah ditolak)
+  stepOrder    Int            @map("step_order")
+  stepName     String         @map("step_name") @db.VarChar(50)
+  approverId   Int            @map("approver_id")
+  approver     User           @relation(fields: [approverId], references: [id])
+  status       ApprovalStatus @default(PENDING)
+  notes        String?        @db.Text
+  actedAt      DateTime?      @map("acted_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  @@index([documentType, documentId])
+  @@index([approverId, status])
+  @@map("document_approvals")
+}
+
+// Penomoran dokumen: nomor urut per jenis dokumen, per department, per tahun
+model DocumentSequence {
+  id           Int          @id @default(autoincrement())
+  documentType DocumentType @map("document_type")
+  departmentId Int          @map("department_id")
+  year         Int
+  lastNumber   Int          @map("last_number")
+
+  @@unique([documentType, departmentId, year])
+  @@map("document_sequences")
+}
+
+// ===== Transaksi: Permintaan Barang =====
+
+enum PurchaseRequestStatus {
+  DRAFT
+  IN_APPROVAL
+  APPROVED
+  REJECTED // dikembalikan ke pembuat untuk direvisi
+  CANCELLED // dibatalkan pembuat; nomor tidak dipakai ulang
+}
+
+model PurchaseRequest {
+  id           Int                   @id @default(autoincrement())
+  number       String                @unique @db.VarChar(50) // contoh: 101/PUD/08/2026, dibuat saat PB pertama kali disimpan
+  requestDate  DateTime              @map("request_date") @db.Date
+  departmentId Int                   @map("department_id")
+  department   Department            @relation(fields: [departmentId], references: [id])
+  tehaiHyouNo  String?               @map("tehai_hyou_no") @db.VarChar(50)
+  status       PurchaseRequestStatus @default(DRAFT)
+  round        Int                   @default(0) // berapa kali sudah diajukan
+  currentStep  Int?                  @map("current_step") // tahap approval yang sedang berjalan
+  createdById  Int                   @map("created_by")
+  createdBy    User                  @relation(fields: [createdById], references: [id])
+  submittedAt  DateTime?             @map("submitted_at")
+  approvedAt   DateTime?             @map("approved_at")
+  items        PurchaseRequestItem[]
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
+
+  @@map("purchase_requests")
+}
+
+model PurchaseRequestItem {
+  id                Int             @id @default(autoincrement())
+  purchaseRequestId Int             @map("purchase_request_id")
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  lineNo            Int             @map("line_no")
+  machineItemId     Int?            @map("machine_item_id") // kalau mesin/unit dipilih dari Item List
+  machineItem       Item?           @relation("PurchaseRequestMachine", fields: [machineItemId], references: [id])
+  machine           String?         @db.VarChar(255) // kode/nama mesin (dari Item List atau diketik manual)
+  accountCode       String          @map("account_code") @db.VarChar(30)
+  itemId            Int?            @map("item_id") // kalau barang dipilih dari Item List
+  item              Item?           @relation("PurchaseRequestItem", fields: [itemId], references: [id])
+  itemCode          String?         @map("item_code") @db.VarChar(30) // disalin dari Item List, atau kosong
+  itemName          String          @map("item_name") @db.VarChar(255)
+  quantity          Decimal         @db.Decimal(15, 2)
+  unit              String          @db.VarChar(20)
+  usageDate         DateTime        @map("usage_date") @db.Date
+  remarks           String?         @db.Text
+
+  @@map("purchase_request_items")
+}
