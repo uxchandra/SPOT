@@ -52,6 +52,162 @@ Lalu buka http://localhost:5173 dan login dengan akun admin awal:
 
 Request dari frontend ke `/api/...` otomatis diteruskan ke backend (lihat `proxy` di `frontend/vite.config.ts`).
 
+## Deploy ke server (Windows, diakses lewat IP)
+
+Di server, backend Express sekaligus menyajikan tampilan (hasil build React), jadi cukup **1 program & 1 port**,
+tanpa Apache/Nginx. Komputer lain di jaringan kantor membuka `http://IP-SERVER:PORT`, contoh `http://192.168.88.8:3000`.
+
+Semua perintah di bawah dijalankan di **PowerShell** pada server.
+
+### Langkah 0: Siapkan aplikasi pendukung di server
+
+| Aplikasi | Keterangan | Cek versi |
+| -------- | ---------- | --------- |
+| Git | untuk `git clone` / `git pull` | `git --version` |
+| Node.js versi 24 (LTS) | samakan dengan versi saat development | `node -v` |
+| MySQL 8 | boleh lewat Laragon | `mysql --version` |
+
+### Langkah 1: Clone project dari GitHub
+
+```powershell
+cd C:\apps                     # folder bebas, contoh C:\apps
+git clone https://github.com/uxchandra/SPOT.git
+cd SPOT
+```
+
+Kalau repository-nya **private**, Git akan meminta login GitHub. Pakai akun yang punya akses ke repo
+(password diganti **Personal Access Token**: GitHub → Settings → Developer settings → Personal access tokens).
+
+### Langkah 2: Buat database
+
+Jalankan di MySQL (HeidiSQL / phpMyAdmin / command line):
+
+```sql
+CREATE DATABASE pud_online_system CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+Sebaiknya buat juga user MySQL khusus aplikasi (jangan pakai root tanpa password di server).
+
+### Langkah 3: Build frontend (tampilan)
+
+```powershell
+cd C:\apps\SPOT\frontend
+npm ci
+npm run build                  # hasil: folder frontend\dist
+```
+
+### Langkah 4: Setup backend
+
+```powershell
+cd C:\apps\SPOT\backend
+npm ci                         # install library + generate Prisma Client
+Copy-Item .env.example .env
+notepad .env                   # isi seperti contoh di bawah, lalu simpan
+```
+
+Isi `backend\.env`:
+
+```env
+PORT=3000
+NODE_ENV=production
+COOKIE_SECURE=false
+DATABASE_URL="mysql://USER:PASSWORD@localhost:3306/pud_online_system"
+JWT_SECRET="isi-dengan-string-acak-baru"
+SEED_ADMIN_EMAIL="admin@pud.local"
+SEED_ADMIN_PASSWORD="ganti-password-awal-admin"
+```
+
+- `COOKIE_SECURE=false` **wajib** selama aplikasi diakses lewat `http://` (tanpa HTTPS); kalau tidak, user tidak bisa login.
+- `JWT_SECRET` buat yang **baru** (jangan sama dengan komputer development). Hasilkan dengan:
+  `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+- `PORT=80` boleh dipakai supaya user cukup membuka `http://IP-SERVER`, asal port 80 tidak dipakai program lain (Apache/IIS/Laragon).
+- File `.env` **tidak ikut** di GitHub. Simpan cadangannya di tempat aman.
+
+Lanjutkan:
+
+```powershell
+npm run build                  # hasil: folder backend\dist
+npm run db:deploy              # membuat semua tabel
+npm run db:seed                # sekali saja di awal: role, permission & akun admin
+```
+
+### Langkah 5: Coba jalankan
+
+```powershell
+node dist/index.js
+```
+
+Kalau berhasil, muncul:
+
+```
+Backend berjalan di http://localhost:3000
+Tampilan (frontend) disajikan dari C:\apps\SPOT\frontend\dist
+  Dari komputer lain di jaringan: http://192.168.88.8:3000
+```
+
+Buka alamat tersebut di browser server, coba login, lalu hentikan dengan `Ctrl + C`.
+
+### Langkah 6: Jalankan permanen dengan PM2
+
+PM2 menjaga aplikasi tetap hidup: restart otomatis kalau crash dan ikut menyala saat Windows restart.
+
+```powershell
+npm install -g pm2 pm2-windows-startup
+cd C:\apps\SPOT\backend
+pm2 start dist/index.js --name spot
+pm2 save
+pm2-startup install
+```
+
+Perintah PM2 yang sering dipakai: `pm2 status`, `pm2 logs spot`, `pm2 restart spot`, `pm2 stop spot`.
+
+### Langkah 7: Buka port di Windows Firewall
+
+PowerShell **sebagai Administrator** (sesuaikan nomor port dengan `PORT` di `.env`):
+
+```powershell
+New-NetFirewallRule -DisplayName "SPOT" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow
+```
+
+### Langkah 8: Cek dari komputer lain
+
+1. Buka `http://IP-SERVER:3000` dari komputer lain di jaringan kantor.
+2. Login dengan akun admin dari `.env`, lalu **segera ganti password admin** (menu User).
+3. Isi data awal: Department → User (beserta department-nya) → Alur Approval → Kategori Item, Supplier, Item List.
+
+Minta tim IT memberi server **IP tetap (static IP)** supaya alamat aplikasi tidak berubah.
+
+### Update aplikasi (setelah ada perubahan di GitHub)
+
+```powershell
+cd C:\apps\SPOT
+git pull
+
+cd frontend
+npm ci
+npm run build
+
+cd ..\backend
+npm ci
+npm run build
+npm run db:deploy              # menjalankan migration baru (kalau ada)
+pm2 restart spot
+```
+
+`npm run db:seed` hanya perlu dijalankan lagi kalau ada **permission baru**; aman dijalankan berulang
+(tidak menimpa pengaturan role yang sudah diubah lewat layar).
+
+### Kalau ada masalah
+
+| Gejala | Penyebab & solusi |
+| ------ | ----------------- |
+| Komputer lain tidak bisa membuka aplikasi | Port belum dibuka di firewall (Langkah 7), atau IP server salah. Cek alamat di `pm2 logs spot` |
+| Login berhasil tapi langsung kembali ke halaman login | `COOKIE_SECURE=false` belum diisi di `.env`. Setelah diubah: `pm2 restart spot` |
+| Pesan "Tidak dapat terhubung ke server" | Backend mati: cek `pm2 status` & `pm2 logs spot` |
+| Error database saat start / `db:deploy` | `DATABASE_URL` salah, database belum dibuat, atau MySQL belum jalan |
+| `EADDRINUSE` di log | Port sudah dipakai program lain. Ganti `PORT` di `.env` (dan aturan firewall), lalu `pm2 restart spot` |
+| Halaman masih versi lama setelah update | Tekan `Ctrl + F5` di browser; pastikan `npm run build` di folder frontend sudah dijalankan |
+
 ## Login, role & permission
 
 - Login memakai token JWT yang disimpan di cookie `httpOnly` (berlaku 8 jam).

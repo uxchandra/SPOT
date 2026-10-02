@@ -8,7 +8,9 @@ const router = Router();
 const cookieOptions = {
   httpOnly: true, // tidak bisa dibaca JavaScript di browser (aman dari XSS)
   sameSite: "lax" as const,
-  secure: process.env.NODE_ENV === "production", // wajib HTTPS di production
+  // secure = cookie hanya dikirim lewat HTTPS. Default: aktif di production.
+  // Kalau aplikasi diakses lewat http://IP-server (tanpa HTTPS), set COOKIE_SECURE=false di .env.
+  secure: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "true" : process.env.NODE_ENV === "production",
   maxAge: 8 * 60 * 60 * 1000, // 8 jam, sama dengan masa berlaku token
 };
 
